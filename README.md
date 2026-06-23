@@ -26,4 +26,4 @@ make
 mpirun -np 4 ChemPeriodic
 ```
 ## Implemented symmetry operations
-Currently, the code can perform only symmetry operations on patterns in a square type lattice: translation along the lattice vector and rotation of 90&deg. 
+Currently, the code can perform only symmetry operations on patterns in a square type lattice: translation along the lattice vector and rotation of 90 °. 
