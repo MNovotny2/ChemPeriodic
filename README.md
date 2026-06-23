@@ -1,6 +1,6 @@
 # ChemPeriodic
 
-A simple tool for generating Symmetry-inequivalent structures 
+A simple tool for generating symmetry-inequivalent surface structures. 
 
 ## Required
 
@@ -19,3 +19,11 @@ Compile using the makefile
 ```bash
 make
 ```
+
+## Usage Example
+
+```bash
+mpirun -np 4 ChemPeriodic
+```
+## Implemented symmetry operations
+Currently, the code can perform only symmetry operations on patterns in a square type lattice: translation along the lattice vector and rotation of 90&deg. 
