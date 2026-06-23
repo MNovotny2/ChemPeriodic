@@ -3,9 +3,8 @@ program variations_mpi_frequency
    implicit none
    integer :: ierr, rank, nprocs
    integer(kind=8) :: i, total, start, finish, chunk
-   integer :: j, k, base, npos,unitt
-   integer :: fh, fh_freq, fh_var
-   !XXX
+   integer :: j, k, base, npos
+   integer :: fh_freq, fh_var
    character(len=500) :: seq
    character(len=100) :: buf
    integer, allocatable :: digs(:)
@@ -19,14 +18,12 @@ program variations_mpi_frequency
    integer, allocatable :: recvcounts_chars(:), displs_chars(:)
    integer, allocatable :: recvcounts_counts(:), displs_counts(:)
    integer, allocatable :: sendcounts(:), displs(:)
-   integer, allocatable :: recvcounts(:), displs_elems(:)
-   integer :: total_keys, total_chars
+   integer :: total_keys
    integer :: keylen
    character(len=:), allocatable :: char_keys(:)
    character(len=:), allocatable :: global_char_keys(:)
    integer, allocatable :: global_keys(:, :)
    integer, allocatable :: global_counts(:)
-   integer :: keypos
    integer :: mpi_fh
    integer(kind=MPI_OFFSET_KIND) :: offset
    integer(kind=MPI_OFFSET_KIND) :: rec_size
@@ -36,19 +33,20 @@ program variations_mpi_frequency
    integer :: passs, temp_count
    integer, allocatable :: tmp_row(:)
    ! Periodic
-   integer :: lineno, nlines, nseq, tmpnseq, chnuniq, rank_idx, c1, c2, c3, c4
-   integer :: o, m, check, counter, Num2
+   integer :: lineno, nlines, nseq, tmpnseq, chnuniq, rank_idx, chnuniq_global
+   integer :: o, m, counter, sq_check
+   logical :: check
    integer(kind=8) :: nlfreq, nlvar
    character(len=:), allocatable :: local_variat(:)      ! variable-length strings for local variations
    character(len=:), allocatable :: tmp_variat(:)
    character(len=:), allocatable :: b(:)
-   character(len=:), allocatable :: local_unique(:)
-   character(len=100) :: line
+   integer :: b_size, symmetry_type
+   character(len=:), allocatable :: local_unique_code(:)
+   integer, allocatable :: local_unique_key(:, :)
    character(len=:), allocatable :: code, code2
    integer, allocatable :: local_variat_key(:, :)
-   character(len=50) :: fname
-   ! timings
-   real :: start_time, end_time, run_time
+   character(len=1000) :: buf_line
+   integer :: mpi_fh_output
 
    call MPI_Init(ierr)
    call MPI_Comm_rank(MPI_COMM_WORLD, rank, ierr)
@@ -60,14 +58,37 @@ program variations_mpi_frequency
    end if
 
    ! --- Read program inputs ---
+   ! Read symmetry type from user
    if (rank == 0) then
-      print *, "Enter base (e.g., 4): "
-      read (*, *) base
-      print *, "Enter npos (e.g., 9): "
-      read (*, *) npos
+      print *, "Select symmetry type:"
+      print *, "1 = Square"
+!      read (*, *) symmetry_type
+      symmetry_type=1
    end if
+   if (rank == 0) then
+      print *, "Enter number of substituents (e.g., 4): "
+      read (*, *) base
+      print *, "Enter number of substitution sites (e.g., 9): "
+      read (*, *) npos
+      select case(symmetry_type)
+         case(1)
+         sq_check=mod(npos,int(sqrt(npos/1.0)))
+         if ( sq_check /= 0 ) then
+            print *, "System is not square. Terminating program"
+            base = -1
+         end if
+      end select
+   end if
+
    call MPI_Bcast(base, 1, MPI_INTEGER, 0, MPI_COMM_WORLD, ierr)
    call MPI_Bcast(npos, 1, MPI_INTEGER, 0, MPI_COMM_WORLD, ierr)
+
+   ! Termination on bad input
+   ! All ranks check error flag and terminate together
+   if (base == -1) then
+     call MPI_Finalize(ierr)
+     stop
+   end if
 
    allocate (digs(npos))
    allocate (freq(base))
@@ -97,8 +118,7 @@ program variations_mpi_frequency
    ! --- Generate sequences, write asynchronously to variations.dat ---
    do i = start, finish
       ! Generate sequences by calculating all possible variations
-      ! and then asignig a banse N number to the position umber of the varitation
-      ! e.g. for base 4 and 9 positions number   =
+      ! and then asignig a banse N number to the position number of the varitation
       call to_digits(i, base, npos, digs)
       seq = ''
       freq = 0
@@ -255,9 +275,11 @@ program variations_mpi_frequency
 
    ! --- Rank 0 writes frequency.dat ---
    open (newunit=fh_freq, file="frequency.dat", status="replace", action="write")
+
    do idx = 1, total_keys
-      write (fh_freq, *) (global_keys(idx, j), j=1, base), global_counts(idx)
+      write(fh_freq,*) (global_keys(idx,j),j=1,base), global_counts(idx)
    end do
+
    close (fh_freq)
    print *, "Frequency table written to frequency.dat"
    end if
@@ -324,7 +346,7 @@ program variations_mpi_frequency
 
    ! now each rank has local_keys with local_counts
    ! load variotions coresponding to keys on each rank
-   open (unit=fh_var, file='variations.dat', status='old', action='read')
+   open (newunit=fh_var, file='variations.dat', status='old', action='read')
 
    nlvar = sum(local_counts)
    allocate (character(len=npos + 1) :: local_variat(nlvar))
@@ -363,41 +385,32 @@ program variations_mpi_frequency
    !############################################################################################
    !############################################################################################
    !############################################################################################
-   allocate (character(len=npos) :: local_unique(nlvar))
+   allocate (character(len=npos) :: local_unique_code(nlvar))
+   allocate (local_unique_key(nlvar,(base+1)))
    allocate (character(len=npos) :: code)
-   local_unique = "N"
+   local_unique_code = "N"
    chnuniq = 0
-   if (rank == 0) then
-      buf = ""
-      write(buf,'(*(A,I0,1X))') ("T", m, m=1, base)
-      write (*, *) "Unique ",trim(buf)," Num_chem_equiv" 
-   end if
- ! Create a unique filename for this rank
- write(fname, '(A,I0,A)') "tmp_variants_", rank, ".dat"
- ! Use rank as unit number (careful if very many ranks)
- unitt = 10 + rank
- open(unit=unitt, file=fname, status='replace', action='write')
    do i = 1, nlfreq
-!X      write (unitt, *) "Working on key:",(local_keys(i,j),j=1,base),"Num sequences:",local_counts(i)
-!X   do i = 1, 5
       ! Simple case if there is only one varation with that key
       if (local_counts(i) == 1) then
+         b_size=1
          do idx = 1, nlvar
             ! find the variations with that specific freqency and store it in final output local_unique
             counter = 0
-!X               write (*, *) "Before Rank:",rank,"LK:",(local_keys(i, j),j=1,base),"LVK:", &
-!X                       (local_variat_key(idx, j),j=1,base),"LV:",local_variat(idx)
             do j = 1, base
                if (local_keys(i, j) == local_variat_key(idx, j)) then
                   counter = counter + 1
                end if
             end do
             if (counter == base) then
-!X               write (*, *) "YES Rank:",rank,"LK:",(local_keys(i, j),j=1,base),"LVK:",(local_variat_key(idx, j),j=1,base)
-               ! Match found: store seq, and freq
+               ! Match found: store code, key and freq
                chnuniq = chnuniq + 1
-               local_unique(chnuniq) = local_variat(idx)
-               write (*, *) local_unique(chnuniq),(local_variat_key(idx,m), m=1,base),"1" 
+               local_unique_code(chnuniq) = local_variat(idx)
+               do m=1,base
+                  local_unique_key(chnuniq,m) = local_variat_key(idx,m) 
+               end do
+               m=m+1
+               local_unique_key(chnuniq,m) = b_size
                exit
             end if
          end do
@@ -411,99 +424,97 @@ program variations_mpi_frequency
          do idx = 1, nlvar
             ! find all variations with that specific freqency and store them in tmp_variat
             counter = 0
-!X               write (unitt, *) "Before Rank:",rank,"LK:",(local_keys(i, j),j=1,base),"LVK:", &
-!X                       (local_variat_key(idx, j),j=1,base),"LV:",local_variat(idx)
             do j = 1, base
                if (local_keys(i, j) == local_variat_key(idx, j)) then
                   counter = counter + 1
                end if
             end do
             if (counter == base) then
-!X               write (unitt, *) "YES Rank:",rank,"LK:",(local_keys(i, j),j=1,base),"LVK:",(local_variat_key(idx, j),j=1,base), &
-!X                       "LV:",local_variat(idx)
                ! Match found: store seq
                ! tmp_variat is filled with all the variations that match the currently analyzed key: local_keys(i,:)
                tmpnseq = tmpnseq + 1
                tmp_variat(tmpnseq) = local_variat(idx)
             end if
          end do
-!X         write (unitt, *) "Rank:",rank,"key:",(local_keys(i,j),j=1,base),"Count",tmpnseq,"LC",local_counts(i)
-!         do j = 1, tmpnseq
-!            write(unitt,*) tmp_variat(j)
-!         end do
 !XX Good until now
-!X         write (unitt, *) "tmpnseq:",tmpnseq
          do j = 1, tmpnseq
             if ("N" /= tmp_variat(j)) then
                if (allocated(b)) deallocate (b)
                allocate (character(len=npos) :: b(local_counts(i)))
                ! Fill b array with N to indicate not used position for combination
                b = "N"
+               ! Load the first paatern into the b array
                b(1) = tmp_variat(j)
 
                counter = 0
-               call asize(b,Num2)
-               do while (counter < Num2)
+               b_size=1 
+               do while (counter < b_size) 
+                  counter = counter + 1
+                  code = b(counter)
                   ! this loops  creates new chemicaly equivalent sequences and
                   ! adds them to b only if they are new
                   ! the counter counts the number of passes of the loop == generation loops
                   ! if the loop whent trough all the sequences and couldnt generate a new unique sequence
                   ! it will stop
-                  counter = counter + 1
-
-                  ! Do vertical shift and check if structure already exist
-                  ! if no add to the list
-                  code = b(counter)
-                  call shiftV(code, code2, npos)
-                  call asize(b,Num2)
-                  check = 0
-                  do k = 1, Num2
-                     if (code2 == b(k)) then
-                        check = check + 1
-                     end if
-                  end do
-                  if (check /= 1) then
-                     b(Num2 + 1) = code2
-                  end if
-
-                  ! Do horizontal and check if structure already exist
-                  ! if no add to the list
-                  call shiftH(code, code2, npos)
-                  call asize(b,Num2)
-                  check = 0
-                  do k = 1, Num2
-                     if (code2 == b(k)) then
-                        check = check + 1
-                     end if
-                  end do
-                  if (check /= 1) then
-                     b(Num2 + 1) = code2
-                  end if
-
-                  ! Do rotation and check if structure already exist
-                  ! if no add to the list
-                  call rotate(code, code2, npos)
-                  call asize(b,Num2)
-                  check = 0
-                  do k = 1, Num2
-                     if (code2 == b(k)) then
-                        check = check + 1
-                     end if
-                  end do
-                  if (check /= 1) then
-                     b(Num2 + 1) = code2
-                  end if
-
-                  call asize(b,Num2)
-                  do k = 1, Num2
-                  end do
+                  
+                  select case(symmetry_type)
+                     case(1)
+                        ! Do vertical shift and check if structure already exist
+                        ! if no add to the list
+                        call shiftV(code, code2, npos)
+                        check = .false.
+                        do k = 1, b_size
+                           if (code2 == b(k)) then
+                              check = .true.
+                              exit
+                           end if
+                        end do
+                        if ( .not. check ) then
+                           b_size= b_size + 1
+                           b(b_size) = code2
+                        end if
+                        
+                        ! Do horizontal and check if structure already exist
+                        ! if no add to the list
+                        call shiftH(code, code2, npos)
+                        check = .false.
+                        do k = 1, b_size
+                           if ( code2 == b(k) ) then
+                              check = .true.
+                              exit
+                           end if
+                        end do
+                        if ( .not. check ) then
+                           b_size= b_size + 1
+                           b(b_size) = code2
+                        end if
+                        
+                        ! Do rotation and check if structure already exist
+                        ! if no add to the list
+                        call rotate(code, code2, npos)
+                        check = .false.
+                        do k = 1, b_size
+                           if (code2 == b(k)) then
+                              check = .true.
+                              exit
+                           end if
+                        end do
+                        if ( .not. check ) then
+                           b_size= b_size + 1
+                           b(b_size) = code2
+                        end if
+                     end select
                end do
                ! All chemicaly eqivalent variations have been generated and stored in b(:)
                ! Remove generated variations form set of all varations tmp_variat
                chnuniq = chnuniq + 1
-               local_unique(chnuniq) = b(1)
-               call asize(b,Num2)
-               do m = 1, Num2
+               local_unique_code(chnuniq) = b(1)           
+               do m=1,base
+                  local_unique_key(chnuniq,m) = local_variat_key(i,m) 
+               end do
+               m=m+1
+               local_unique_key(chnuniq,m) = b_size
+               do m = 1, b_size
                   do o = 1, tmpnseq
                      if (b(m) == tmp_variat(o)) then
                         tmp_variat(o) = "N"
@@ -511,12 +522,6 @@ program variations_mpi_frequency
                      end if
                   end do
                end do
-               ! Output one leading chemicaly unique combination
-        !      write (*, *) local_unique(chnuniq),(local_variat_key(i,m), m=1,base),Num2,(b(m)," ",m=1,Num2) 
-               write (unitt, *) local_unique(chnuniq),(local_variat_key(i,m), m=1,base),Num2
-!         do o=1, tmpnseq
-!         write(*,*) tmp_variat(o)
-!         end do
             end if
          end do
 
@@ -525,11 +530,21 @@ program variations_mpi_frequency
 !            write(25,*) b(i)
 !         end do
       end if
-!X      write (unitt, *) "Found ",chnuniq,"chemicaly unique variations"
    end do
-!
+call MPI_Reduce(chnuniq, chnuniq_global, 1, MPI_INTEGER, MPI_SUM, 0, MPI_COMM_WORLD, ierr)
+if (rank == 0) then
+   write (*, *) "Found ",chnuniq_global,"chemicaly unique variations out of ", total
+   call MPI_File_delete("all_variants.dat", MPI_INFO_NULL, ierr)
+end if
+call MPI_Barrier(MPI_COMM_WORLD, ierr)
+call MPI_File_open(MPI_COMM_WORLD, "variations_unique.dat",MPI_MODE_CREATE + MPI_MODE_WRONLY, MPI_INFO_NULL, mpi_fh_output, ierr)
+! Output chemicaly unique combination
+do i = 1, chnuniq
+   write(buf_line, '(A, 100(I8), I0)') local_unique_code(i), (local_unique_key(i, m), m=1, base+1)
+   call MPI_File_write_shared(mpi_fh_output, trim(buf_line)//new_line('A'),len(trim(buf_line)//new_line('A')), &
+                              MPI_CHARACTER, MPI_STATUS_IGNORE, ierr)
+end do
 !!##################################################################################################################
-!
    call MPI_Finalize(ierr)
 
 contains
@@ -554,7 +569,7 @@ contains
       integer, allocatable, intent(inout) :: counts(:)
       integer, intent(in) :: nkeys
       integer, intent(in) :: freq(:)
-      integer :: old, base, i
+      integer :: old, base
       integer, allocatable :: tmpk(:, :), tmpc(:)
 
       old = nkeys - 1
@@ -571,55 +586,12 @@ contains
       call move_alloc(tmpc, counts)
    end subroutine extend_local
 
-   subroutine asize(a,N)
-      implicit none
-      character(len=*), intent(in) :: a(:)
-      integer, intent(out) :: N
-    ! Local
-      integer :: i
-
-      N = 0
-      do i = 1, size(a)
-         if (trim(a(i)) /= "N") then
-            N = N + 1
-         end if
-      end do
-   end subroutine asize
-
-!  ! Subroutines for symmetrry operations !! 9 positions ONLY !!
-!  subroutine shiftV(code, code2, npos)
-!     implicit none
-!     character(len=*), intent(in) ::  code
-!     character(len=:), allocatable, intent(out) :: code2
-!     integer :: npos
-!     allocate (character(len=npos) :: code2)
-!     code2 = code(7:9)//code(1:6)
-!  end subroutine shiftV
-!
-!  subroutine shiftH(code, code2, npos)
-!     implicit none
-!     character(len=*), intent(in) ::  code
-!     character(len=:), allocatable, intent(out) :: code2
-!     integer :: npos
-!     allocate (character(len=npos) :: code2)
-!     code2 = code(3:3)//code(1:2)//code(6:6)//code(4:5)//code(9:9)//code(7:8)
-!  end subroutine shiftH
-!
-!  subroutine rotate(code, code2, npos)
-!     implicit none
-!     character(len=*), intent(in) ::  code
-!     character(len=:), allocatable, intent(out) :: code2
-!     integer :: npos
-!     allocate (character(len=npos) :: code2)
-!     code2 = code(3:3)//code(6:6)//code(9:9)//code(2:2)//code(5:5)//code(8:8)//code(1:1)//code(4:4)//code(7:7)
-!  end subroutine rotate
-
    ! Subroutines for symmetrry operations !! Square systems ONLY !!
    subroutine shiftV(code, code2, npos)
       implicit none
       character(len=*), intent(in) ::  code
       character(len=:), allocatable, intent(out) :: code2
-      integer :: npos, side, strt1, end1, end2
+      integer :: npos, side, strt1, end2
       allocate (character(len=npos) :: code2)
       side=int(sqrt(npos/1.0))
       strt1=npos-side+1
@@ -631,7 +603,7 @@ contains
       implicit none
       character(len=*), intent(in) ::  code
       character(len=:), allocatable, intent(out) :: code2
-      integer :: npos, side, strt1, end1, end2, i 
+      integer :: npos, side, strt1, end1, i 
       allocate (character(len=npos) :: code2)
       side=int(sqrt(npos/1.0))
       code2=""
