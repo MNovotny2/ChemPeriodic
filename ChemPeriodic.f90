@@ -393,7 +393,6 @@ program variations_mpi_frequency
    do i = 1, nlfreq
       ! Simple case if there is only one varation with that key
       if (local_counts(i) == 1) then
-         b_size=1
          do idx = 1, nlvar
             ! find the variations with that specific freqency and store it in final output local_unique
             counter = 0
@@ -409,7 +408,7 @@ program variations_mpi_frequency
                do m=1,base
                   local_unique_key(chnuniq,m) = local_variat_key(idx,m) 
                end do
-               m=m+1
+               b_size=1
                local_unique_key(chnuniq,m) = b_size
                exit
             end if
@@ -512,7 +511,6 @@ program variations_mpi_frequency
                do m=1,base
                   local_unique_key(chnuniq,m) = local_variat_key(i,m) 
                end do
-               m=m+1
                local_unique_key(chnuniq,m) = b_size
                do m = 1, b_size
                   do o = 1, tmpnseq
@@ -540,7 +538,7 @@ call MPI_Barrier(MPI_COMM_WORLD, ierr)
 call MPI_File_open(MPI_COMM_WORLD, "variations_unique.dat",MPI_MODE_CREATE + MPI_MODE_WRONLY, MPI_INFO_NULL, mpi_fh_output, ierr)
 ! Output chemicaly unique combination
 do i = 1, chnuniq
-   write(buf_line, '(A, 100(I8), I0)') local_unique_code(i), (local_unique_key(i, m), m=1, base+1)
+   write(buf_line, '(A, 100(I8))') local_unique_code(i), (local_unique_key(i, m), m=1, base+1)
    call MPI_File_write_shared(mpi_fh_output, trim(buf_line)//new_line('A'),len(trim(buf_line)//new_line('A')), &
                               MPI_CHARACTER, MPI_STATUS_IGNORE, ierr)
 end do
